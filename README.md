@@ -35,6 +35,7 @@ Total filtered observations: **1,616**
 ---
 
 ## Repository Structure
+
 scripts/
 │
 ├── 01_data_cleaning.py
