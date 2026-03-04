@@ -35,3 +35,12 @@ Total filtered observations: **1,616**
 ---
 
 ## Repository Structure
+scripts/
+│
+├── 01_data_cleaning.py
+├── 02_add_lag_features.py
+├── 03_make_Tplus_targets.py
+├── 04_compare_Tplus_models.py
+├── 05_make_composite_averages.py
+├── 06_make_synoptic_maps.py
+└── 07_ols_significance_tests.py
