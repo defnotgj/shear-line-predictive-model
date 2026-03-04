@@ -36,6 +36,7 @@ Total filtered observations: **1,616**
 
 ## Repository Structure
 
+```
 shear-line-predictive-model/
 │
 ├── scripts/
@@ -48,3 +49,4 @@ shear-line-predictive-model/
 │   └── 07_ols_significance_tests.py
 │
 └── README.md
+```
