@@ -1,70 +1,159 @@
-import os
-import glob
+"""
+Phase 1: Shear Line Detection Model (Multi-Province)
+Study Area: Bicol Region (NASA POWER Data)
+Temporal Resolution: Daily
+Period: 2020–2022
+"""
+
 import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import os
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, "phase2_outputs")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+INPUT_FOLDER = "."  
 
-pattern = os.path.join(BASE_DIR, "*_daily_shearline.csv")
-files = glob.glob(pattern)
+# Output folders 
+OUTPUT_FOLDER = "outputs"
+DAILY_FOLDER = os.path.join(OUTPUT_FOLDER, "daily")
+YEARLY_FOLDER = os.path.join(OUTPUT_FOLDER, "yearly")
 
-if not files:
-    raise FileNotFoundError(
-        "No *_daily_shearline.csv files found in this folder."
-    )
+os.makedirs(DAILY_FOLDER, exist_ok=True)
+os.makedirs(YEARLY_FOLDER, exist_ok=True)
 
-print("Found files:")
-for f in files:
-    print(" -", os.path.basename(f))
+# NASA POWER missing value
+MISSING_FLAG = -999
 
-for fpath in files:
-    fname = os.path.basename(fpath)
-    prov = fname.replace("_daily_shearline.csv", "")
-
-    print(f"\nProcessing {prov}...")
-
-    df = pd.read_csv(fpath)
-
-    df["DATE"] = df["DATE"].astype(str).str.strip()
+# Thresholds
+RAIN_THRESHOLD_MM = 25
+RH_THRESHOLD = 85
+WD_MIN_DEG = 30
+WD_MAX_DEG = 90
+DELTA_T_MAX_C = 7
+WS_MAX_MS = 10
 
 
-    d1 = pd.to_datetime(df["DATE"], errors="coerce")
+
+def find_header_row(file_path):
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        for i, line in enumerate(f):
+            if line.strip().upper().startswith("YEAR"):
+                return i
+    raise ValueError(f"Could not find YEAR header in {file_path}")
 
 
-    d2 = pd.to_datetime(df["DATE"], errors="coerce", dayfirst=True)
+
+def classify_shear_line(sli):
+    if sli >= 4:
+        return "Shear Line Day"
+    elif sli == 3:
+        return "Possible Shear Line"
+    else:
+        return "Non-Shear Line Day"
+
+
+
+all_yearly_summaries = []
+
+csv_files = [f for f in os.listdir(INPUT_FOLDER) if f.lower().endswith(".csv")]
+
+if not csv_files:
+    raise FileNotFoundError("No CSV files found in the input folder.")
+
+print("Detected CSV files:", csv_files)
+
+for file_name in csv_files:
+    file_path = os.path.join(INPUT_FOLDER, file_name)
+    province_name = os.path.splitext(file_name)[0]  # filename without .csv
+
+    print(f"\nProcessing {province_name}...")
+
+
+    header_row = find_header_row(file_path)
+    df = pd.read_csv(file_path, skiprows=header_row)
+
+
+    df.columns = df.columns.str.strip().str.upper()
 
  
-    df["DATE"] = d1.fillna(d2)
+    required_cols = ["YEAR", "DOY", "RH2M", "PRECTOTCORR", "WD2M", "T2M_MAX", "T2M_MIN", "WS2M"]
+    for col in required_cols:
+        if col not in df.columns:
+            raise ValueError(f"{file_name} is missing required column: {col}")
 
 
-    bad = df["DATE"].isna().sum()
-    if bad > 0:
-        print(f"⚠️ {prov}: removed {bad} invalid DATE rows")
-        df = df.dropna(subset=["DATE"])
+    df["DATE"] = df.apply(
+        lambda row: datetime(int(row["YEAR"]), 1, 1) + timedelta(days=int(row["DOY"]) - 1),
+        axis=1
+    )
+    df["DATE"] = pd.to_datetime(df["DATE"])
+
+
+    df = df.replace(MISSING_FLAG, np.nan)
+
+
+    df = df.dropna(subset=["RH2M", "PRECTOTCORR", "WD2M", "T2M_MAX", "T2M_MIN", "WS2M"])
 
     df = df.sort_values("DATE").reset_index(drop=True)
 
-    df["DATE"] = df["DATE"].dt.strftime("%Y-%m-%d")
 
-    df["RAIN_T1"] = df["PRECTOTCORR"].shift(-1)
-    df["RH_T1"] = df["RH2M"].shift(-1)
-    df["WS_T1"] = df["WS2M"].shift(-1)
-    df["WD_T1"] = df["WD2M"].shift(-1)
-    df["DELTA_T_T1"] = df["DELTA_T"].shift(-1)
+    df["DELTA_T"] = df["T2M_MAX"] - df["T2M_MIN"]
 
-    confirmed = df[df["CLASSIFICATION"] == "Shear Line Day"].copy()
 
-    confirmed = confirmed.dropna(
-        subset=["RAIN_T1", "RH_T1", "WS_T1", "WD_T1", "DELTA_T_T1"]
+    df["I1_RAIN"] = (df["PRECTOTCORR"] >= RAIN_THRESHOLD_MM).astype(int)
+    df["I2_HUMIDITY"] = (df["RH2M"] >= RH_THRESHOLD).astype(int)
+    df["I3_WIND_DIR"] = ((df["WD2M"] >= WD_MIN_DEG) & (df["WD2M"] <= WD_MAX_DEG)).astype(int)
+    df["I4_TEMP_RANGE"] = (df["DELTA_T"] <= DELTA_T_MAX_C).astype(int)
+    df["I5_WIND_SPEED"] = (df["WS2M"] <= WS_MAX_MS).astype(int)
+
+
+    df["SLI"] = (
+        df["I1_RAIN"] +
+        df["I2_HUMIDITY"] +
+        df["I3_WIND_DIR"] +
+        df["I4_TEMP_RANGE"] +
+        df["I5_WIND_SPEED"]
     )
 
-    out_path = os.path.join(
-        OUTPUT_DIR, f"{prov}_post_shearline_T1.csv"
+ 
+    df["CLASSIFICATION"] = df["SLI"].apply(classify_shear_line)
+
+
+    output_columns = [
+        "DATE",
+        "PRECTOTCORR", "RH2M", "WD2M", "WS2M",
+        "T2M_MAX", "T2M_MIN", "DELTA_T",
+        "I1_RAIN", "I2_HUMIDITY", "I3_WIND_DIR", "I4_TEMP_RANGE", "I5_WIND_SPEED",
+        "SLI", "CLASSIFICATION"
+    ]
+
+    daily_output_file = os.path.join(DAILY_FOLDER, f"{province_name}_daily_shearline.csv")
+    df[output_columns].to_csv(daily_output_file, index=False)
+    print(f"Daily saved: {daily_output_file}")
+
+
+    df["YEAR_ONLY"] = df["DATE"].dt.year
+    yearly_summary = (
+        df[df["CLASSIFICATION"] == "Shear Line Day"]
+        .groupby("YEAR_ONLY")
+        .size()
+        .reset_index(name="Shear_Line_Days")
     )
 
-    confirmed.to_csv(out_path, index=False)
+    yearly_summary["PROVINCE"] = province_name.replace("_", " ").title()
 
-    print(f"✅ {prov}: saved {len(confirmed)} rows")
+    yearly_output_file = os.path.join(YEARLY_FOLDER, f"{province_name}_yearly_summary.csv")
+    yearly_summary.to_csv(yearly_output_file, index=False)
+    print(f"Yearly saved: {yearly_output_file}")
 
-print("\n✅ Phase 2 Step 1 COMPLETE — all provinces processed.")
+    all_yearly_summaries.append(yearly_summary)
+
+
+# COMBINED REGIONAL SUMMARY
+regional_summary = pd.concat(all_yearly_summaries, ignore_index=True)
+regional_summary = regional_summary.sort_values(["PROVINCE", "YEAR_ONLY"])
+
+regional_output_file = os.path.join(OUTPUT_FOLDER, "bicol_shearline_yearly_summary.csv")
+regional_summary.to_csv(regional_output_file, index=False)
+
+print("\n✅ Phase 1 processing complete.")
+print(f"Regional summary saved: {regional_output_file}")
